@@ -1,0 +1,85 @@
+# System Doctor
+
+Linux system toolkit with interactive TUI. Two tools, one launcher.
+
+## Launch
+
+```bash
+python3 system_doctor.py          # Main menu
+```
+
+Or run tools directly:
+
+```bash
+python3 disk_cleaner.py           # Disk cleaner (same as find_big_files.py)
+python3 net_diagnostics.py        # Network diagnostics
+python3 net_diagnostics.py --run-all   # Auto-run all checks on launch
+```
+
+Use `sudo` for full access:
+
+```bash
+sudo python3 system_doctor.py
+sudo python3 net_diagnostics.py
+```
+
+## Tools
+
+### 1. Disk Cleaner
+
+Find large files, directories, Docker images and containers. Select and delete interactively.
+
+| Key | Action |
+|-----|--------|
+| ↑↓ | Navigate |
+| Space | Toggle selection |
+| A | Select / deselect all |
+| U | Auto-select UNUSED images + STOPPED containers |
+| D | Delete selected (asks confirmation) |
+| Q | Quit |
+| ? | Help overlay |
+
+### 2. Network Diagnostics
+
+19 checks covering the full network stack. Two-panel TUI: check list on the left, scrollable output on the right.
+
+| Key | Action |
+|-----|--------|
+| ↑↓ | Navigate check list (or scroll output) |
+| Tab | Switch focus between list and output panel |
+| R | Run highlighted check |
+| A | Run all checks sequentially |
+| S | Save full report to `~/.system_doctor/` |
+| F | Open fix menu for highlighted check (`*` in list = fixes available) |
+| Q | Quit |
+| ? | Help overlay |
+
+**Checks:**
+
+| # | Check | Notes |
+|---|-------|-------|
+| 1 | System Info | OS, kernel, uptime, timezone |
+| 2 | Network Hardware | PCI/USB adapters, lshw |
+| 3 | Drivers & Modules | Kernel modules, dmesg errors |
+| 4 | Interfaces | ip link, ip addr, iwconfig |
+| 5 | WiFi Connection | Signal strength, SSID, power management |
+| 6 | NetworkManager | nmcli status, active connections |
+| 7 | Routing & Gateway | Default GW, ARP table |
+| 8 | DNS | resolv.conf, nslookup tests (Google + Cloudflare) |
+| 9 | Connectivity | Ping gateway, 8.8.8.8, google.com |
+| 10 | Latency & MTU | 20-packet ping, MTU discovery — **slow** |
+| 11 | Bandwidth | curl download test, speedtest-cli — **slow** |
+| 12 | Firewall | ufw, iptables (root), firewalld |
+| 13 | Ports & Connections | ss -tuln, established connections |
+| 14 | DHCP | Lease files |
+| 15 | Proxy & VPN | Env proxy vars, TUN interfaces |
+| 16 | Interface Stats | /proc/net/dev, error counters |
+| 17 | System Logs | journalctl NM + wpa_supplicant, dmesg |
+| 18 | Auth & Certs | wpa_supplicant, SSL certs, 802.1X config |
+| 19 | Advanced Tests | HTTPS/HTTP curl, dig, NTP, traceroute — **slow** |
+
+## Requirements
+
+- Python 3.6+, no pip dependencies (stdlib only)
+- Optional tools (gracefully skipped if missing): `iw`, `iwconfig`, `nmcli`, `lshw`, `dig`, `traceroute`, `speedtest-cli`, `mtr`
+- Docker CLI (for disk cleaner Docker features)
