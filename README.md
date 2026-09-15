@@ -28,6 +28,7 @@ sudo python3 net_diagnostics.py
 ### 1. Disk Cleaner
 
 Find large files, directories, Docker images and containers. Select and delete interactively.
+Every row carries a risk badge saying what deleting it costs you.
 
 | Key | Action |
 |-----|--------|
@@ -38,6 +39,26 @@ Find large files, directories, Docker images and containers. Select and delete i
 | D | Delete selected (asks confirmation) |
 | Q | Quit |
 | ? | Help overlay |
+
+**Risk badges**
+
+| Badge | Level | Means | Categories |
+|-------|-------|-------|------------|
+| `███` | CRITICAL | unrecoverable | `git-history`, `db-live` |
+| `██░` | CAUTION | probably no second copy | `media`, `dump`, running containers |
+| `█░░` | UNKNOWN | not identified — the cleaner cannot vouch for it | `other` |
+| `░░░` | SAFE | regenerates | `venv`, `node_mod`, `cache`, unreferenced images |
+
+Classification is by path segment, never by age: **an untouched file is not a safe file.** A git
+pack from an old clone reads as cold precisely because it is history — that is what it is for.
+The cleaner never refuses a deletion, but when the selection contains a CRITICAL item the
+confirmation asks you to type `CRITICAL` rather than a single keypress.
+
+Untagged Docker images (`<none>:<none>`) are resolved to their Compose origin via image labels,
+so a row reads `legacoop/astro (dangling)` instead of nothing. Sizes come from
+`docker system df -v`: the column shows what deleting that image actually reclaims, with
+`+N MB shared` naming the layers you only get back by deleting every image that uses them
+(`docker images` alone double-counts those, over-reporting a group of four by ~4×).
 
 ### 2. Network Diagnostics
 
