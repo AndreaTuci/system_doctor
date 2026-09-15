@@ -35,6 +35,7 @@ Every row carries a risk badge saying what deleting it costs you.
 | ↑↓ | Navigate |
 | Space | Toggle selection |
 | A | Select / deselect all |
+| 1 2 3 4 | Toggle every row at one risk level (CRITICAL / CAUTION / UNKNOWN / SAFE) |
 | U | Auto-select UNUSED images + STOPPED containers |
 | D | Delete selected (asks confirmation) |
 | Q | Quit |
@@ -59,6 +60,17 @@ so a row reads `legacoop/astro (dangling)` instead of nothing. Sizes come from
 `docker system df -v`: the column shows what deleting that image actually reclaims, with
 `+N MB shared` naming the layers you only get back by deleting every image that uses them
 (`docker images` alone double-counts those, over-reporting a group of four by ~4×).
+
+Images are listed **stalest first**, so the ones you are least likely to still need float to the
+top. Read the age label carefully, because Docker stores no last-use timestamp on an image:
+
+| Label | Meaning |
+|-------|---------|
+| `run 4mo` | real signal — a container built on this image last started then |
+| `built 3y` | no container ever ran; this is only the build/pull date |
+
+On a typical machine most rows are `built` (here: 138 of 166). The ordering changes what you see
+first, never what is safe — that is the badge's job.
 
 ### 2. Network Diagnostics
 
