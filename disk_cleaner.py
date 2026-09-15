@@ -12,6 +12,7 @@ import subprocess
 import json
 import shutil
 import sys
+from datetime import datetime, timezone
 
 import risk
 
@@ -156,10 +157,75 @@ IMAGE_ID_CHARS = 12
 DOCKER_NO_VALUE = '<no value>'          # what docker prints for a missing label
 UNTAGGED = '<none>:<none>'
 DF_TIMEOUT = 60                          # `system df -v` walks the layer store
+# `index` on a nil map aborts the whole batch, and 64 of 152 images here carry no
+# labels at all — so guard before indexing or one unlabelled image loses every name.
 COMPOSE_LABEL_FORMAT = (
-    '{{.Id}}|{{index .Config.Labels "com.docker.compose.project"}}'
+    '{{.Id}}|{{if .Config.Labels}}'
+    '{{index .Config.Labels "com.docker.compose.project"}}'
     '|{{index .Config.Labels "com.docker.compose.service"}}'
+    '{{else}}|{{end}}'
 )
+
+NEVER_TIME = '0001-01-01'                # docker's zero value for a container never run
+UTC_FORMAT = '%Y-%m-%dT%H:%M:%S'         # '2026-09-15T08:15:20.884341427Z' (inspect)
+OFFSET_FORMAT = '%Y-%m-%d %H:%M:%S %z'   # '2026-09-11 16:37:59 +0200 CEST' (images)
+SECONDS_PER_DAY = 86400
+DAYS_PER_MONTH = 30
+DAYS_PER_YEAR = 365
+
+
+def _epoch(text):
+    """Parse either docker time format to epoch seconds; 0 when absent or never-run."""
+    text = str(text or '').strip()
+    if not text or text.startswith(NEVER_TIME):
+        return 0
+    try:
+        if text.endswith('Z'):
+            naive = datetime.strptime(text[:-1].split('.')[0], UTC_FORMAT)
+            return int(naive.replace(tzinfo=timezone.utc).timestamp())
+        return int(datetime.strptime(' '.join(text.split()[:3]), OFFSET_FORMAT).timestamp())
+    except (ValueError, IndexError):
+        return 0
+
+
+def _ago(epoch, now):
+    """Compact age label: 'today', '9d', '4mo', '3y'."""
+    if not epoch:
+        return '?'
+    days = max(0, int((now - epoch) // SECONDS_PER_DAY))
+    if days < 1:
+        return 'today'
+    if days < DAYS_PER_MONTH:
+        return f'{days}d'
+    if days < DAYS_PER_YEAR:
+        return f'{days // DAYS_PER_MONTH}mo'
+    return f'{days // DAYS_PER_YEAR}y'
+
+
+def _container_activity():
+    """
+    Latest container start per image id, from ONE batched inspect.
+
+    Docker records no 'last used' on an image — only Created and LastTagTime.
+    The nearest real signal is when a container built on that image last
+    started. On this machine that covers 25 of 152 images; every other image
+    has nothing but its build date, so callers must fall back and say so.
+    """
+    _, out = _run_docker('ps', '-a', '--format', '{{.ID}}')
+    ids = [line.strip() for line in out.splitlines() if line.strip()]
+    if not ids:
+        return {}
+
+    _, out = _run_docker('container', 'inspect', *ids,
+                         '--format', '{{.Image}}|{{.State.StartedAt}}')
+    activity = {}
+    for line in out.splitlines():
+        raw_id, _, started = line.partition('|')
+        image_id = _short_image_id(raw_id)
+        epoch = _epoch(started)
+        if image_id and epoch > activity.get(image_id, 0):
+            activity[image_id] = epoch
+    return activity
 
 
 def _short_image_id(raw):
@@ -214,9 +280,9 @@ def _docker_compose_labels(image_ids):
     """
     if not image_ids:
         return {}
-    rc, out = _run_docker('image', 'inspect', *image_ids, '--format', COMPOSE_LABEL_FORMAT)
-    if rc != 0:
-        return {}
+    # Parse whatever came back even on a non-zero exit: a batch that fails on one
+    # image still prints the ones before it, and a partial name beats no name.
+    _, out = _run_docker('image', 'inspect', *image_ids, '--format', COMPOSE_LABEL_FORMAT)
 
     names = {}
     for line in out.strip().splitlines():
@@ -224,7 +290,7 @@ def _docker_compose_labels(image_ids):
         if len(parts) != 3:
             continue
         image_id, project, service = _short_image_id(parts[0]), parts[1], parts[2]
-        if not image_id or project == DOCKER_NO_VALUE:
+        if not image_id or not project or project == DOCKER_NO_VALUE:
             continue
         names[image_id] = f"{project}/{service}" if service != DOCKER_NO_VALUE else project
     return names
@@ -237,7 +303,22 @@ def _dangling_image_ids():
     return {_short_image_id(line) for line in out.splitlines() if line.strip()}
 
 
-def _build_image_item(img, usage, compose_names):
+def _image_age(img, image_id, activity, now):
+    """
+    (sort key, label) for how stale an image is.
+
+    'run' is a real container start; 'built' is only when the image was made.
+    Never conflate the two in the label — 127 of 152 images here have no run
+    signal at all, so most of this column is a build date wearing no disguise.
+    """
+    used_at = activity.get(image_id, 0)
+    if used_at:
+        return used_at, f"run {_ago(used_at, now)}"
+    used_at = _epoch(img.get('CreatedAt'))
+    return used_at, f"built {_ago(used_at, now)}"
+
+
+def _build_image_item(img, usage, compose_names, activity, now):
     """One image row: compose-resolved name, reclaimable size, reference count, risk."""
     image_id = _short_image_id(img.get('ID'))
     full_name = f"{img.get('Repository', '<none>')}:{img.get('Tag', '<none>')}"
@@ -256,6 +337,7 @@ def _build_image_item(img, usage, compose_names):
         status = 'USED' if stats['containers'] else 'UNUSED'
         category, level = risk.classify_docker_image(stats['containers'])
 
+    used_at, age_label = _image_age(img, image_id, activity, now)
     return {
         'type': 'docker_image',
         'name': full_name,
@@ -264,7 +346,8 @@ def _build_image_item(img, usage, compose_names):
         'size': reclaimable,
         'shared': shared,
         'status': status,
-        'extra': img.get('CreatedSince', ''),
+        'extra': age_label,
+        'used_at': used_at,
         'category': category,
         'level': level,
     }
@@ -279,6 +362,8 @@ def get_docker_images():
     dangling = _dangling_image_ids()
     usage = _docker_disk_usage()
     compose_names = _docker_compose_labels(sorted(dangling))
+    activity = _container_activity()
+    now = datetime.now(timezone.utc).timestamp()
 
     images = []
     for line in out.strip().splitlines():
@@ -289,9 +374,11 @@ def get_docker_images():
         except json.JSONDecodeError:
             continue
 
-        images.append(_build_image_item(img, usage, compose_names))
+        images.append(_build_image_item(img, usage, compose_names, activity, now))
 
-    images.sort(key=lambda x: x['size'], reverse=True)
+    # Stalest first: whatever you are least likely to still need floats to the top.
+    # This changes the ORDER only — the risk badge, not the age, says what is safe.
+    images.sort(key=lambda x: x['used_at'])
     return images
 
 
@@ -431,12 +518,27 @@ class InteractivePicker:
         else:
             self.selected_ids.add(uid)
 
-    def _select_all_toggle(self):
-        all_uids = {r['uid'] for r in self.rows if r['type'] == 'item'}
-        if all_uids.issubset(self.selected_ids):
-            self.selected_ids -= all_uids
+    def _toggle_uids(self, uids):
+        """Select the whole set, or clear it when it is already fully selected."""
+        if uids and uids.issubset(self.selected_ids):
+            self.selected_ids -= uids
         else:
-            self.selected_ids |= all_uids
+            self.selected_ids |= uids
+
+    def _select_all_toggle(self):
+        self._toggle_uids({r['uid'] for r in self.rows if r['type'] == 'item'})
+
+    def _toggle_level(self, level):
+        """Select or clear every row at one risk level."""
+        uids = {r['uid'] for r in self.rows
+                if r['type'] == 'item' and r['item'].get('level') == level}
+        if not uids:
+            self.status_msg = f"No {level} items in this list."
+            self.status_is_error = False
+            return
+        self._toggle_uids(uids)
+        self.status_msg = f"{len(uids)} {level} item(s) toggled."
+        self.status_is_error = False
 
     def _select_unused_stopped(self):
         for row in self.rows:
@@ -583,6 +685,8 @@ class InteractivePicker:
                 self._select_all_toggle()
             elif key in (ord('u'), ord('U')):
                 self._select_unused_stopped()
+            elif ord('1') <= key <= ord('0') + len(risk.LEVELS):
+                self._toggle_level(risk.LEVELS[key - ord('1')])
             elif key in (ord('?'), ord('h'), ord('H')):
                 self._show_help(stdscr)
 
@@ -592,6 +696,7 @@ class InteractivePicker:
             "  KEYBOARD SHORTCUTS  ",
             "",
             "  ↑↓ PgUp/PgDn Navigate   SPACE Toggle   A Select all   U Unused+Stopped",
+            "  1 CRITICAL  2 CAUTION  3 UNKNOWN  4 SAFE   — toggle every row at a level",
             "  D Delete (asks confirmation)   Q/Esc Quit   ?/H This help",
             "",
             "  RISK BADGE — what deleting this costs you",
@@ -600,12 +705,11 @@ class InteractivePicker:
             "  █░░ UNKNOWN   not identified — the cleaner cannot vouch for it",
             "  ░░░ SAFE      regenerates: venv, node_modules, caches, images",
             "",
-            "  Age never lowers a badge. A git pack from 2022 reads as cold",
-            "  precisely because it is history — cold is not the same as safe.",
-            "",
+            "  Age never lowers a badge — a 2022 git pack is cold because it IS history.",
+            "  Images list stalest first: 'run 4mo' is a real container start, while",
+            "  'built 3y' means none ever ran — docker records no last-use on an image.",
             "  [USED] / [UNUSED]  image referenced by a container, or not",
-            "  +N MB shared       layers shared with other images — you reclaim",
-            "                     that space only by deleting all of them",
+            "  +N MB shared       shared layers — reclaimed only by deleting all of them",
             "  Press any key to close",
         ]
         box_w = min(max(len(l) for l in lines) + 4, w - 4)
@@ -724,7 +828,8 @@ class InteractivePicker:
                 stdscr.addstr(h - 1, 0, (' ' + self.status_msg)[:w - 1].ljust(w - 1))
                 stdscr.attroff(attr)
             else:
-                footer = " ↑↓:Navigate  SPC:Select  A:All  U:Unused/Stopped  D:Delete  Q:Quit  ?:Help"
+                footer = (" ↑↓:Nav  SPC:Sel  A:All  1-4:By risk  U:Unused  "
+                          "D:Delete  Q:Quit  ?:Help")
                 stdscr.attron(curses.color_pair(5))
                 stdscr.addstr(h - 1, 0, footer[:w - 1].ljust(w - 1))
                 stdscr.attroff(curses.color_pair(5))
