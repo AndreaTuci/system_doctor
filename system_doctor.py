@@ -7,14 +7,19 @@ Tools:
   1. Disk Cleaner         — find big files, Docker images/containers; delete interactively
   2. Network Diagnostics  — 19 network checks with two-panel TUI
   3. Bluetooth Diagnostics — 15 bluetooth checks with two-panel TUI (Ubuntu/Mint)
+  4. WiFi Live Graph      — live chart of the WiFi download rate, red when stuck, w to reconnect
 """
 
 import curses
+import signal
+import subprocess
 import sys
 import os
 
 # Make sibling modules importable
 sys.path.insert(0, os.path.dirname(__file__))
+
+WIFI_GRAPH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'wifi_graph.sh')
 
 
 MENU_ITEMS = [
@@ -48,6 +53,16 @@ MENU_ITEMS = [
         ],
         'hint': 'python3 bt_diagnostics.py --run-all  to auto-run all',
     },
+    {
+        'key': '4',
+        'title': 'WiFi Live Graph',
+        'desc': [
+            'Live chart of the WiFi download rate (AP -> PC),',
+            'one column every 5 s. Red = stuck at 6 Mbit/s:',
+            'press w to reconnect, Ctrl+C to come back here.',
+        ],
+        'hint': './wifi_graph.sh --selftest  to check the renderer',
+    },
 ]
 
 LOGO = [
@@ -61,7 +76,7 @@ LOGO = [
 
 
 def show_menu(stdscr):
-    """Curses menu. Returns 1, 2, or None."""
+    """Curses menu. Returns the chosen tool number (1-4), or None."""
     curses.curs_set(0)
     curses.start_color()
     curses.use_default_colors()
@@ -141,7 +156,7 @@ def show_menu(stdscr):
             row += 1  # blank between items
 
         # Footer
-        footer = ' ↑↓:Select  Enter:Launch  1-3:Quick launch  Q:Quit'
+        footer = ' ↑↓:Select  Enter:Launch  1-4:Quick launch  Q:Quit'
         try:
             stdscr.attron(curses.color_pair(4))
             stdscr.addstr(h - 1, 0, footer[:w - 1].ljust(w - 1))
@@ -166,6 +181,8 @@ def show_menu(stdscr):
             return 2
         elif key == ord('3'):
             return 3
+        elif key == ord('4'):
+            return 4
 
 
 def launch_disk_cleaner():
@@ -206,6 +223,18 @@ def launch_bt_diagnostics():
     tui.run()
 
 
+def launch_wifi_graph():
+    # Ctrl+C belongs to the graph, which restores the terminal and stops its monitor. The launcher
+    # ignores it meanwhile so it returns to the menu instead of exiting. The child is spawned first:
+    # an ignored SIGINT would be inherited and the graph could not be quit.
+    graph = subprocess.Popen([WIFI_GRAPH])
+    previous_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        graph.wait()
+    finally:
+        signal.signal(signal.SIGINT, previous_handler)
+
+
 def main():
     while True:
         choice = curses.wrapper(show_menu)
@@ -217,6 +246,8 @@ def main():
             launch_net_diagnostics()
         elif choice == 3:
             launch_bt_diagnostics()
+        elif choice == 4:
+            launch_wifi_graph()
 
 
 if __name__ == '__main__':
