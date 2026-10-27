@@ -1,6 +1,6 @@
 # System Doctor
 
-Linux system toolkit with interactive TUI. Two tools, one launcher.
+Linux system toolkit with interactive TUI. Several tools, one launcher.
 
 ## Launch
 
@@ -14,6 +14,7 @@ Or run tools directly:
 python3 disk_cleaner.py           # Disk cleaner (same as find_big_files.py)
 python3 net_diagnostics.py        # Network diagnostics
 python3 net_diagnostics.py --run-all   # Auto-run all checks on launch
+./wifi_graph.sh                   # WiFi live graph (w = reconnect, Ctrl+C = quit)
 ```
 
 Use `sudo` for full access:
@@ -111,8 +112,28 @@ first, never what is safe — that is the badge's job.
 | 18 | Auth & Certs | wpa_supplicant, SSL certs, 802.1X config |
 | 19 | Advanced Tests | HTTPS/HTTP curl, dig, NTP, traceroute — **slow** |
 
+### 4. WiFi Live Graph
+
+Live terminal chart of the WiFi download rate (access point → PC): one column every 5 s, newest on
+the right, oldest scrolling out on the left. Built for one failure mode: an access point that keeps
+sending to this PC at its 6 Mbit/s floor until the client reconnects. Those samples turn red.
+
+| Key | Action |
+|-----|--------|
+| w | Reconnect (`nmcli connection up`) without leaving the chart |
+| Ctrl+C | Quit (back to the menu when launched from it) |
+
+- Samples come from `wifi_watch.sh`, which only logs. The graph starts it when it is not running and
+  stops it on exit. Log and pid file live in `~/.system_doctor/`.
+- Each opening is a fresh session: older log lines are not drawn.
+- One 6 Mbit/s sample is drawn as a normal minimum bar (idle links show it now and then); two in a
+  row turn red.
+- The reconnected profile is `WIFI_PROFILE` at the top of `wifi_graph.sh`.
+- `./wifi_graph.sh --selftest` checks the renderer.
+
 ## Requirements
 
 - Python 3.6+, no pip dependencies (stdlib only)
 - Optional tools (gracefully skipped if missing): `iw`, `iwconfig`, `nmcli`, `lshw`, `dig`, `traceroute`, `speedtest-cli`, `mtr`
 - Docker CLI (for disk cleaner Docker features)
+- WiFi Live Graph: bash, awk, `iw`, `nmcli` (preinstalled on Ubuntu / Linux Mint)
